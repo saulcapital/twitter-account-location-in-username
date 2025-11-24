@@ -509,17 +509,13 @@ async function addFlagToUsername(usernameElement, screenName) {
 
   // Get flag emoji
   const flag = getCountryFlag(location);
-  if (!flag) {
-    console.log(`No flag found for location: ${location}`);
-    // Shimmer already removed above, but ensure it's gone
-    if (shimmerInserted && shimmerSpan.parentNode) {
-      shimmerSpan.remove();
-    }
-    usernameElement.dataset.flagAdded = 'failed';
-    return;
-  }
+  const displayText = flag ? flag : location;
   
-  console.log(`Found flag ${flag} for ${screenName} (${location})`);
+  if (flag) {
+    console.log(`Found flag ${flag} for ${screenName} (${location})`);
+  } else {
+    console.log(`No flag found for location: ${location}, will display text instead`);
+  }
 
   // Find the username link - try multiple strategies
   // Priority: Find the @username link, not the display name link
@@ -616,15 +612,20 @@ async function addFlagToUsername(usernameElement, screenName) {
     return;
   }
 
-  // Add flag emoji - place it next to verification badge, before @ handle
+  // Add flag emoji or location text - place it next to verification badge, before @ handle
   const flagSpan = document.createElement('span');
-  flagSpan.textContent = ` ${flag}`;
+  flagSpan.textContent = ` ${displayText}`;
   flagSpan.setAttribute('data-twitter-flag', 'true');
   flagSpan.style.marginLeft = '4px';
   flagSpan.style.marginRight = '4px';
   flagSpan.style.display = 'inline';
   flagSpan.style.color = 'inherit';
   flagSpan.style.verticalAlign = 'middle';
+  // Style location text differently if it's not a flag emoji
+  if (!flag) {
+    flagSpan.style.fontSize = '0.9em';
+    flagSpan.style.opacity = '0.8';
+  }
   
   // Use userNameContainer found above, or find it if not found
   const containerForFlag = userNameContainer || usernameElement.querySelector('[data-testid="UserName"], [data-testid="User-Name"]');
@@ -721,7 +722,11 @@ async function addFlagToUsername(usernameElement, screenName) {
     if (inserted) {
       // Mark as processed
       usernameElement.dataset.flagAdded = 'true';
-      console.log(`✓ Successfully added flag ${flag} for ${screenName} (${location})`);
+      if (flag) {
+        console.log(`✓ Successfully added flag ${flag} for ${screenName} (${location})`);
+      } else {
+        console.log(`✓ Successfully added location text "${location}" for ${screenName}`);
+      }
       
       // Also mark any other containers waiting for this username
       const waitingContainers = document.querySelectorAll(`[data-flag-added="waiting"]`);
