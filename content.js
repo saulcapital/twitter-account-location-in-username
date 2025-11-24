@@ -11,6 +11,8 @@ const MIN_REQUEST_INTERVAL = 2000; // 2 seconds between requests (increased to a
 const MAX_CONCURRENT_REQUESTS = 2; // Reduced concurrent requests
 let activeRequests = 0;
 let rateLimitResetTime = 0; // Unix timestamp when rate limit resets
+let rateLimitRemaining = null; // Number of requests remaining in current window
+let rateLimitLimit = null; // Total rate limit for current window
 
 // Observer for dynamically loaded content
 let observer = null;
@@ -76,7 +78,7 @@ async function loadCache() {
             // previously cached null (failure) - skip rehydration to allow retry
             continue;
           }
-          
+
           if (typeof stored === 'string') {
             // legacy format: location was a plain string
             locationCache.set(username, { location: stored, locationAccurate: null });
@@ -117,10 +119,10 @@ async function saveCache() {
     for (const [username, locationData] of locationCache.entries()) {
       // Normalize locationData into a small object we persist. Keep nulls as null so
       // we can distinguish "no location" from "location not yet fetched"
-      const stored = typeof locationData === 'string' 
+      const stored = typeof locationData === 'string'
         ? { location: locationData, locationAccurate: null } // legacy format
         : { location: locationData?.location ?? null, locationAccurate: locationData?.locationAccurate ?? null };
-      
+
       cacheObj[username] = {
         location: stored,
         expiry: expiry,
@@ -172,8 +174,10 @@ function injectPageScript() {
     if (event.source !== window) return;
     if (event.data && event.data.type === '__rateLimitInfo') {
       rateLimitResetTime = event.data.resetTime;
+      rateLimitRemaining = event.data.remaining;
+      rateLimitLimit = event.data.limit;
       const waitTime = event.data.waitTime;
-      console.log(`Rate limit detected. Will resume requests in ${Math.ceil(waitTime / 1000 / 60)} minutes`);
+      console.log(`Rate limit detected. Limit: ${rateLimitLimit}, Remaining: ${rateLimitRemaining}. Will resume requests in ${Math.ceil(waitTime / 1000 / 60)} minutes`);
     }
   });
 }
@@ -184,23 +188,43 @@ async function processRequestQueue() {
     return;
   }
 
-  // Check if we're rate limited
+  // Check if we're rate limited (either explicitly rate limited or out of requests)
   if (rateLimitResetTime > 0) {
     const now = Math.floor(Date.now() / 1000);
     if (now < rateLimitResetTime) {
-      const waitTime = (rateLimitResetTime - now) * 1000;
-      console.log(`Rate limited. Waiting ${Math.ceil(waitTime / 1000 / 60)} minutes...`);
-      setTimeout(processRequestQueue, Math.min(waitTime, 60000)); // Check every minute max
-      return;
+      // Also check if we're out of requests (remaining is 0 or negative)
+      if (rateLimitRemaining !== null && rateLimitRemaining <= 0) {
+        const waitTime = (rateLimitResetTime - now) * 1000;
+        console.log(`Out of rate limit requests (${rateLimitRemaining}/${rateLimitLimit} remaining). Waiting ${Math.ceil(waitTime / 60)} seconds until reset...`);
+        setTimeout(processRequestQueue, Math.min(waitTime, 60000)); // Check every minute max
+        return;
+      }
+      // If we have a reset time but still have requests, continue (but we'll check again in the loop)
     } else {
       // Rate limit expired, reset
       rateLimitResetTime = 0;
+      rateLimitRemaining = null;
+      rateLimitLimit = null;
     }
   }
 
   isProcessingQueue = true;
 
   while (requestQueue.length > 0 && activeRequests < MAX_CONCURRENT_REQUESTS) {
+    // Check if we're running low on rate limit (proactive throttling)
+    if (rateLimitRemaining !== null && rateLimitRemaining <= 5 && rateLimitResetTime > 0) {
+      // If we have 5 or fewer requests remaining, slow down significantly
+      const now = Math.floor(Date.now() / 1000);
+      if (now < rateLimitResetTime) {
+        const waitTime = (rateLimitResetTime - now) * 1000;
+        const waitSeconds = Math.min(waitTime, 300000); // Wait up to 5 minutes, or until reset
+        console.log(`Low on rate limit (${rateLimitRemaining}/${rateLimitLimit} remaining). Waiting ${Math.ceil(waitSeconds / 1000)} seconds before next request...`);
+        await new Promise(resolve => setTimeout(resolve, waitSeconds));
+        // Re-check after waiting
+        continue;
+      }
+    }
+    
     const now = Date.now();
     const timeSinceLastRequest = now - lastRequestTime;
 
@@ -522,21 +546,21 @@ async function addFlagToUsername(usernameElement, screenName) {
     const location = typeof locationData === 'string' ? locationData : locationData?.location;
     const locationAccurate = typeof locationData === 'object' && locationData !== null ? locationData.locationAccurate : null;
     console.log(`Location for ${screenName}:`, location, 'accurate:', locationAccurate);
-    
+
     // Remove shimmer
     if (shimmerInserted && shimmerSpan.parentNode) {
       shimmerSpan.remove();
     }
-    
+
     if (!location) {
       console.log(`No location found for ${screenName}, marking as failed`);
       usernameElement.dataset.flagAdded = 'failed';
       return;
     }
 
-  // Get flag emoji
-  const flag = getCountryFlag(location);
-  const displayText = flag ? flag : location;
+    // Get flag emoji
+    const flag = getCountryFlag(location);
+    const displayText = flag ? flag : location;
 
     if (flag) {
       console.log(`Found flag ${flag} for ${screenName} (${location})`);
@@ -767,7 +791,7 @@ async function addFlagToUsername(usernameElement, screenName) {
           }
         }
       }
-      
+
       // Mark as processed
       usernameElement.dataset.flagAdded = 'true';
       if (flag) {

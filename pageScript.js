@@ -119,6 +119,22 @@
         
         let location = null;
         let locationAccurate = null;
+        
+        // Read rate limit headers from ALL responses (not just 429 errors)
+        const rateLimitReset = response.headers.get('x-rate-limit-reset');
+        const rateLimitRemaining = response.headers.get('x-rate-limit-remaining');
+        const rateLimitLimit = response.headers.get('x-rate-limit-limit');
+        
+        // Send rate limit info to content script on every response
+        if (rateLimitReset || rateLimitRemaining !== null || rateLimitLimit) {
+          window.postMessage({
+            type: '__rateLimitInfo',
+            resetTime: rateLimitReset ? parseInt(rateLimitReset) : null,
+            remaining: rateLimitRemaining !== null ? parseInt(rateLimitRemaining) : null,
+            limit: rateLimitLimit ? parseInt(rateLimitLimit) : null
+          }, '*');
+        }
+        
         if (response.ok) {
           const data = await response.json();
           console.log(`API response for ${screenName}:`, data);
@@ -128,6 +144,9 @@
           // location_accurate is expected to be a boolean (true/false) in the API response
           locationAccurate = about?.location_accurate;
           console.log(`Extracted location for ${screenName}:`, location, 'accurate:', locationAccurate);
+          if (rateLimitRemaining !== null) {
+            console.log(`Rate limit: ${rateLimitRemaining}/${rateLimitLimit} remaining`);
+          }
           
           // Debug: log the full path to see what's available
           if (!location && data?.data?.user_result_by_screen_name?.result) {
@@ -139,27 +158,16 @@
         } else {
           const errorText = await response.text().catch(() => '');
           
-          // Handle rate limiting
+          // Handle rate limiting (429 error)
           if (response.status === 429) {
-            const resetTime = response.headers.get('x-rate-limit-reset');
-            const remaining = response.headers.get('x-rate-limit-remaining');
-            const limit = response.headers.get('x-rate-limit-limit');
-            
-            if (resetTime) {
-              const resetDate = new Date(parseInt(resetTime) * 1000);
+            if (rateLimitReset) {
+              const resetDate = new Date(parseInt(rateLimitReset) * 1000);
               const now = Date.now();
               const waitTime = resetDate.getTime() - now;
               
-              console.log(`Rate limited! Limit: ${limit}, Remaining: ${remaining}`);
+              console.log(`Rate limited! Limit: ${rateLimitLimit}, Remaining: ${rateLimitRemaining}`);
               console.log(`Rate limit resets at: ${resetDate.toLocaleString()}`);
               console.log(`Waiting ${Math.ceil(waitTime / 1000 / 60)} minutes before retrying...`);
-              
-              // Store rate limit info for content script
-              window.postMessage({
-                type: '__rateLimitInfo',
-                resetTime: parseInt(resetTime),
-                waitTime: Math.max(0, waitTime)
-              }, '*');
             }
           } else {
             console.log(`Twitter API error for ${screenName}:`, response.status, response.statusText, errorText.substring(0, 200));
